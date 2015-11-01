@@ -1,8 +1,7 @@
-library(shiny)
-library(shinythemes)
-library(networkD3)
-library(rWordCloud)
-library(dplyr)
+require(shiny)
+require(shinythemes)
+require(networkD3)
+require(rWordCloud)
 
 ## A hidden input for IP address
 #  https://groups.google.com/forum/#!topic/shiny-discuss/EGQhEyoEk3E
@@ -19,7 +18,8 @@ inputIp <- function(inputId, value = '') {
 shinyUI(
   fluidPage(
     theme = shinytheme("readable"),
-    singleton(tags$head(tags$script(src = "message-handler.js"))),
+    # singleton(tags$head(tags$script(src = "message-handler.js"))),
+    singleton(tags$head(tags$script(src = "js/google-analytics.js"))),
     titlePanel("CanvasNet"),
     sidebarLayout(
       sidebarPanel(
@@ -31,12 +31,13 @@ shinyUI(
         selectInput("section", "Course Section", choices = c("Section 001" = token_sec001, "Section 002" = token_sec002)),
         dateRangeInput('dateRange', label = "Date Range", start = Sys.Date() - 14, end = Sys.Date(), min = "2015-09-01", max = "2015-12-24"),
         textInput("userId", "Your Canvas Id"),
-        actionButton("update", "Submit", class = "btn-default btn-sm")
+        checkboxInput("hideTeacher", "Hide Teacher", value=TRUE),
+        actionButton("update", "Submit", class = "btn-primary btn-sm")
       ),
       
       mainPanel(
         tabsetPanel(type = "tabs", id = "tab",
-                    tabPanel("Network", forceNetworkOutput("force")), #, textOutput("testtext")
+                    tabPanel("Network", visNetworkOutput("force")), #, textOutput("testtext")
                     tabPanel("Terms", 
                              column(5, sliderInput("freq", "Minimum Frequency:", min = 1,  max = 50, value = 15)),
                              column(7, sliderInput("max", "Maximum Number of Words:", min = 1,  max = 100,  value = 20)),
