@@ -1,15 +1,29 @@
 require(shiny)
 require(googlesheets)
 require(dplyr)
-require(networkD3)
 require(tm)
 require(visNetwork)
 require(igraph)
+require(rWordCloud)
+require(shinyjs)
 
-# ## JS to enable mouse click on network nodes
-# onClickScript <- 'alert("This is " + d.name + " who has posted " + 
-# ((d3.select(this).select("circle").attr("r")-3)^2/4*Math.PI) +  
-# " notes in our class");'
+## Slice igraph networks by # days
+## Return a list: 1) date brackets; 2) igraph objects
+slice_igraph_network <- function(g, byDays = 7) {
+  
+  edges = as_data_frame(g, 'edges')
+  dates = seq(min(edges$created_at), max(edges$created_at), byDays)
+  brackets = sapply(dates, function(x) {
+    paste(as.Date(x, origin = "1970-01-01"), "~", 
+          as.Date(x + byDays - 1, origin = "1970-01-01"))
+  })
+  graphs = lapply(dates, function(start) {
+    end = start + byDays - 1
+    g - E(g)[created_at < start | created_at >= end]
+  })
+  list(brackets, graphs)
+}
+
 
 shinyServer(function(input, output, session) {
   
@@ -19,31 +33,35 @@ shinyServer(function(input, output, session) {
                                     input$section, input$userId, verb, object))
   }
   
-  ## (Re-)Load data when clicking on "Update" button
-  get_gdoc <- eventReactive(input$update, {
-    withProgress({
-      setProgress(message = "Loading Canvas data...") # set progress
-      
-      # read selected section's data
-      ss <- googlesheets::gs_key(input$section)
-      log_to_gsheets("opens", "app")
-      gdoc = gs_read(ss)
-      
-      # format data
-      gdoc$created_at = as.Date(gdoc$created_at, "%m/%d/%Y")
-      gdoc$vert1_id = as.integer(gdoc$vert1_id)
-      gdoc$vert2_id = as.integer(gdoc$vert2_id)
-      
-      # filter data by date range
-      gdoc %>% filter(created_at >= input$dateRange[1] & 
-                        created_at <= input$dateRange[2])
-    })
+  ## Read data from GDrive
+  read_from_gdoc <- eventReactive(input$section, {
+    # only run this when input$section has changed
+    # not every time when input$update is clicked on
+    isolate(
+      withProgress({
+        setProgress(message = "Loading Canvas data...") # set progress
+        
+        # read selected section's data
+        ss <- googlesheets::gs_key(input$section)
+        log_to_gsheets("launches", "app")
+        gdoc = gs_read(ss)
+        
+        # format data
+        gdoc$created_at = as.Date(gdoc$created_at, "%m/%d/%Y")
+        gdoc$vert1_id = as.integer(gdoc$vert1_id)
+        gdoc$vert2_id = as.integer(gdoc$vert2_id)
+        
+        gdoc
+      })
+    )
   })
   
-  ## Given a vector of Canvas ids, return a vector of course roles (e.g., S, T, U)
-  get_course_role <- function(v) {
-    
-  }
+  ## (Re-)Load data when clicking on "Update" button 
+  get_gdoc <- reactive({
+    # filter data by date range
+    read_from_gdoc() %>% filter(created_at >= input$dateRange[1] & 
+                                  created_at <= input$dateRange[2])
+  })
   
   ## Create SNA graph
   get_graph <- reactive({
@@ -55,9 +73,10 @@ shinyServer(function(input, output, session) {
     if(input$hideTeacher)
       gdoc = gdoc %>% filter(vert1_id != teacher_id & vert2_id != teacher_id)
     
-    graph_from_data_frame(df, directed = TRUE) %>%
-      set_vertex_attr("size", value = degree(g, mode="out")) %>%
-      set_vertex_attr("group", value = sapply(get.vertex.attribute(g)$name, function(x) {
+    g = graph_from_data_frame(gdoc, directed = TRUE)
+    g %>% 
+      set_vertex_attr("value", value = igraph::degree(g, mode="out")) %>% 
+      set_vertex_attr("group", value = sapply(V(g)$name, function(x) {
         if(x == teacher_id) return("T")
         if(x == input$userId) return("U")
         "S"
@@ -65,80 +84,33 @@ shinyServer(function(input, output, session) {
   })
   
   ## Build network when clicking on button
-  force_network <- eventReactive(input$update, {
+  force_network <- reactive({
     
-    ## get data
-    gdoc = get_gdoc() %>% filter(!is.na(vert1_id) & !is.na(vert2_id))
-    if(input$hideTeacher) { # whether to hide teacher from the network
-      gdoc = gdoc %>% filter(vert1_id != teacher_id & vert2_id != teacher_id)
-    }
+    # get the igraph object
+    g = get_graph()
     
-    ## get nodes
-    #  source nodes
-    nodes = select(gdoc, vert1_name, vert1_id) %>%
-      group_by(vert1_id) %>%
-      dplyr::summarise(size = n()) %>%
-      mutate(group = "S")
-    names(nodes) = c("name", "size", "group")
-    
-    # target nodes
-    targets = select(gdoc, vert1_id, vert2_id) %>%
-      filter(!(vert2_id %in% vert1_id)) %>%
-      group_by(vert2_id) %>%
-      dplyr::summarise(size = n()) %>%
-      select(vert2_id) %>%
-      mutate(size = 0, group = "S")
-    names(targets) = c("name", "size", "group")
-    
-    # combine sources and targets together
-    nodes = rbind(nodes, targets) %>% arrange(name)
-    # tag teacher
-    if(!input$hideTeacher) {
-      nodes$group[which(nodes$name == teacher_id)] = "T"
-    }
-    # tag current user
-    nodes$group[which(nodes$name == input$userId)] = "U"
-    nodes$group = factor(nodes$group, levels=c("S", "U", "T"))
-    nodes$ID = seq(0, nrow(nodes)-1)
-    
-    ## get edges
-    edges <- CreateSNADataFrame(gdoc, from="vert1_id", to="vert2_id", 
-                                linkNames="reply")
-    names(edges) = c("source", "target", "value")
-    # get IDs (could get names instead)
-    edges = left_join(edges, select(nodes, name, ID), by = c("source" = "name")) %>%
-      left_join(select(nodes, name, ID), by = c("target" = "name"))
-    
-    nodes$id = nodes$ID
-    nodes$label = nodes$name
-    edges2 = edges
-    edges2$from = edges2$ID.x; edges2$to = edges2$ID.y
-    visNetwork(nodes, edges2, height = "500px", width = "100%") %>% 
-      visOptions(nodesIdSelection = TRUE)
-    
-    nodes = get.data.frame(g, 'vertices')
+    # get nodes and edges
+    nodes = as_data_frame(g, 'vertices')
     nodes$id = nodes$name
-    edges = get.data.frame(g, 'edges')
-    visNetwork(
-      nodes  = nodes,
-      edges  = edges,
-      legend = TRUE) %>%
-      visGroups(groupname = "S", color = "#d7191c") %>%
-      visGroups(groupname = "U", color = "#abdda4") %>%
+    nodes$title = paste0("<p><b>Id:</b> ", nodes$id,"<br><b>Replies:</b> ", nodes$value, "</p>")
+    edges = as_data_frame(g, 'edges') %>%
+      group_by(from, to) %>%
+      summarise(value = n())
+    
+    # plot visNetwork
+    visNetwork(nodes = nodes, edges = edges, legend = TRUE) %>%
+      visGroups(groupname = "S", color = "#abdda4") %>%
+      visGroups(groupname = "U", color = "#d7191c") %>%
       visGroups(groupname = "T", color = "#fdae61") %>%
-      visEdges(
-        arrows =list(to = list(enabled = TRUE, scaleFactor = .5)),
-        scaling=list(min=0.1, max=3),
-        color = list(color='gray', opacity=.25),
-        smooth=list(enabled=TRUE, type="curvedCW"))  %>%
-      visOptions(
-        width  = "100%",
-        height = 500,
-        # smoothCurves = TRUE,
-        # stabilizationIterations = 100,
-        nodesIdSelection = TRUE,
-        highlightNearest = TRUE
-      ) %>%
+      visNodes(scaling = list(min=5, max=25)) %>%
+      visEdges(arrows =list(
+        to = list(enabled = TRUE, scaleFactor = .5)), 
+        scaling = list(min=0.1, max=3), 
+        color = list(color='gray', highlight='red', opacity=.25),
+        smooth = list(enabled=TRUE, type="curvedCW")) %>%
+      visOptions(width = "100%", height = 500,
+                 nodesIdSelection = TRUE, 
+                 highlightNearest = TRUE) %>%
       visPhysics(
         stabilization = list(enabled=TRUE, iterations=100),
         barnesHut = list(
@@ -149,25 +121,85 @@ shinyServer(function(input, output, session) {
           springConstant = 0.032,
           damping = 0.235
         ))
-#     forceNetwork(Links = data.frame(edges), Nodes = data.frame(nodes), 
-#                  Source = "ID.x", Target = "ID.y", Group = "group", 
-#                  Value = "value", Nodesize = "size", NodeID = "name", 
-#                  radiusCalculation = JS(" Math.sqrt(d.nodesize*4/Math.PI) + 3"), 
-#                  linkWidth = JS("function(d) { return Math.sqrt(d.value)-0.5; }"),
-#                  opacity = 0.8, charge = -500, legend = TRUE, colourScale = JS("d3.scale.category10()"),
-#                  fontFamily = "Georgia, serif", clickAction = onClickScript)
   })
-  
-  
   
   ## Show force directed layout
   output$force <- renderVisNetwork({
-    log_to_gsheets("views", "network")
-    force_network()
+    # Take a dependency on input$update
+    input$update
+    
+    isolate(log_to_gsheets("views", "network"))
+    isolate(force_network())
   })
   
+  output$test <- renderText({
+    paste(input$network_selected, input$network_selectedBy)
+  })
+  
+  ## network metrics
+  output$networkMertrics <- renderUI({
+    # Take a dependency on input$update
+    input$update
+    
+    withProgress({
+      setProgress(message = "Computing network measures...") # set progress
+      
+      g <- get_graph()
+      isolate(log_to_gsheets("views", "network metrics"))
+      tags$div(
+        tags$p(paste0(length(V(g)), " participants have made ", 
+                      length(E(g)), " links so far, with a density of ",
+                      round(graph.density(g) * 100, 1), "%."))
+      )
+    })
+  })
+  
+  output$personalMetrics <- renderTable({
+    # Take a dependency on input$update
+    input$update
+    
+    g <- get_graph()
+    
+    isolate(
+      if(!is.null(input$userId) & input$userId %in% V(g)$name) {
+        isolate(log_to_gsheets("views", "personal metrics"))
+        id = V(g)$name
+        idx = which(id == input$userId)
+        indegree = igraph::degree(g, mode = 'in')
+        outdegree = igraph::degree(g, mode = 'out')
+        df = data.frame(c(outdegree[idx], mean(outdegree), max(outdegree)),
+                        c(indegree[idx], mean(indegree), max(indegree)),
+                        row.names = c("Your Score", 'Class Average', 'Class Maximum'))
+        names(df) = c("Replies", "Being replied")
+        df
+      }
+    )
+  }, digits = 0)
+  
+  output$personalChange <- renderTable({
+    # Take a dependency on input$update
+    input$update
+    
+    g <- get_graph()
+    
+    isolate(
+      if(!is.null(input$userId) & input$userId %in% V(g)$name) {
+        graph_slices = slice_igraph_network(g)
+        
+        df = data.frame(t(sapply(graph_slices[[2]], function(gi){
+          id = V(gi)$name
+          idx = which(id == input$userId)
+          c(igraph::degree(gi, mode = 'out')[idx], 
+            igraph::degree(gi, mode = 'in')[idx])
+        })), row.names = graph_slices[[1]])
+        names(df) = c("Replies", "Being replied")
+        df
+      }
+    )
+  }, digits = 0)
+  
   # Define a reactive expression for the document term matrix
-  terms <- eventReactive(input$update, {
+  terms <- reactive({
     # Change when the "update" button is pressed...
     #     input$update
     # ...but not for anything else
@@ -182,7 +214,7 @@ shinyServer(function(input, output, session) {
         myCorpus = tm_map(myCorpus, removePunctuation)
         myCorpus = tm_map(myCorpus, removeNumbers)
         myCorpus = tm_map(myCorpus, removeWords,
-                          c(stopwords("SMART"), "thy", "thou", "thee", "the", "and", "but", "dont", stops))
+                          c(stopwords("SMART"), stops))
         
         myDTM = TermDocumentMatrix(myCorpus,
                                    control = list(minWordLength = 1))
@@ -193,26 +225,67 @@ shinyServer(function(input, output, session) {
     })
   })
   
-  # Make the wordcloud drawing predictable during a session
-  wordcloud_rep <- repeatable(wordcloud)
-  
-  output$plot <- renderPlot({
-    v <- terms()
-    wordcloud_rep(names(v), v, scale=c(4, 0.5),
-                  min.freq = input$freq, max.words=input$max,
-                  rot.per = 0, colors=brewer.pal(8, "Dark2"))
+  get_user_posts <- reactive({
+    get_gdoc() %>%
+      filter(vert1_id == input$userId)
   })
   
+  ## Plot wordcloud
   output$d3Plot <- renderd3Cloud({
     log_to_gsheets("views", "cloud")
     v <- head(terms(), input$max)
     v <- v[v >= input$freq]
     d3Cloud(text = names(v), size = v)
   })
+  
+  output$termCoverage <- renderText({
+    
+    if(input$userId == "")
+      return(NULL)
+    v <- head(terms(), input$max)
+    v <- v[v >= input$freq]
+    freqTerms = names(v)
+    posts = get_user_posts()$message_text
+    
+    covered = sapply(freqTerms, function(t) {
+      sum(grepl(t, posts, ignore.case = TRUE)) > 0
+    })
+    toCover = paste(freqTerms[!covered], collapse = ",  ")
+    if(nchar(toCover) == 0)
+      return("Congrats! You covered all these terms.")
+    else
+      return(paste0("<br>Hey! You've coverted:  ", paste(freqTerms[covered], collapse = ",  "),
+                    "<br>More terms for you to think about:  <b>", toCover, "</b>"))
+  })
+  
+  ## Log mouseclicks on terms
   output$wordCount <- renderText({
     v <- terms()
     if(!any(names(input)=='d3word')) return ("Click on a word for count")
-    else isolate({ log_to_gsheets("clicks", input$d3word) })
+    else isolate( log_to_gsheets("clicks word", input$d3word) )
     paste(input$d3word, "-", v[input$d3word])
+  })
+  
+  ## About panel
+  output$about <- renderUI({
+    isolate(log_to_gsheets("views", "about"))
+    tags$div(
+      tags$h4('Built by the CI4311W team, with ♥'),
+      tags$p("Communication and teamwork are essential skills for your academic and (future) professional life. 
+             In CI4311W, these skills are reflected in your participation in discussion forums. 
+             This app is to help you assess and monitor your progress, and to set personal goals for participation."),
+      tags$p('Below are some helpful tips:'),
+      tags$ul(
+        tags$li('Use this app for personal reflection, rather than peer comparison'),
+        tags$li("'Chat' with your teacher or peers about your thoughts on your results"),
+        tags$li('Type in your Canvas id to see your personal results'),
+        tags$li("In the network graph, a bigger size means more 'replies' to others"),
+        tags$li('Click on a node to see its connections'),
+        tags$li("In the word cloud, a bigger size means higher frequency in class discussion"),
+        tags$li("Think about words you've NOT engaged with yet"),
+        tags$li('Track your progress in different weeks, by tinkering with different date ranges'),
+        tags$li('Check back to the app every week...')),
+      tags$p('Have questions? Contact Prof. Bodong Chen: chenbd.umn.edu')
+    )
   })
 })
