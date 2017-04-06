@@ -4,7 +4,7 @@ require(dplyr)
 require(tm)
 require(visNetwork)
 require(igraph)
-require(rWordCloud)
+# require(rWordCloud)
 require(shinyjs)
 
 ## Slice igraph networks by # days
@@ -69,6 +69,16 @@ shinyServer(function(input, output, session) {
     gdoc = get_gdoc() %>%
       select(vert1_id, vert2_id, topic_id, created_at, message_id)
     
+    # gdoc$vert1_id_old = as.integer(gdoc$vert1_id)
+    # gdoc$vert2_id_old = as.integer(gdoc$vert2_id)
+    # 
+    # dict = data.frame(id = unique(c(gdoc$vert1_id, gdoc$vert2_id)))
+    # dict$key = 1:nrow(dict)
+    # 
+    # require(plyr)
+    # gdoc$vert1_id <- mapvalues(gdoc$vert1_id_old, from=dict$id, to=dict$key)
+    # gdoc$vert2_id <- mapvalues(gdoc$vert2_id_old, from=dict$id, to=dict$key)
+    
     # whether to hide teacher from the network
     if(input$hideTeacher)
       gdoc = gdoc %>% filter(vert1_id != teacher_id & vert2_id != teacher_id)
@@ -91,18 +101,20 @@ shinyServer(function(input, output, session) {
     
     # get nodes and edges
     nodes = as_data_frame(g, 'vertices')
+    nodes$label = 1:nrow(nodes)
     nodes$id = nodes$name
-    nodes$title = paste0("<p><b>Id:</b> ", nodes$id,"<br><b>Replies:</b> ", nodes$value, "</p>")
+    nodes$title = paste0("<p><b>Id:</b> ", nodes$label,"<br><b>Replies:</b> ", nodes$value, "</p>")
     edges = as_data_frame(g, 'edges') %>%
-      group_by(from, to) %>%
-      summarise(value = n())
+      dplyr::group_by(from, to) %>%
+      dplyr::summarise(value = n())
     
     # plot visNetwork
-    visNetwork(nodes = nodes, edges = edges, legend = TRUE) %>%
+    visNetwork(nodes = nodes, edges = edges) %>%
       visGroups(groupname = "S", color = "#abdda4") %>%
       visGroups(groupname = "U", color = "#d7191c") %>%
       visGroups(groupname = "T", color = "#fdae61") %>%
-      visNodes(scaling = list(min=5, max=25)) %>%
+      visLegend(enabled = TRUE) %>%
+      visNodes(scaling = list(min=5, max=25), id = NULL) %>%
       visEdges(arrows =list(
         to = list(enabled = TRUE, scaleFactor = .5)), 
         scaling = list(min=0.1, max=3), 
@@ -231,12 +243,12 @@ shinyServer(function(input, output, session) {
   })
   
   ## Plot wordcloud
-  output$d3Plot <- renderd3Cloud({
-    log_to_gsheets("views", "cloud")
-    v <- head(terms(), input$max)
-    v <- v[v >= input$freq]
-    d3Cloud(text = names(v), size = v)
-  })
+  # output$d3Plot <- renderd3Cloud({
+  #   log_to_gsheets("views", "cloud")
+  #   v <- head(terms(), input$max)
+  #   v <- v[v >= input$freq]
+  #   d3Cloud(text = names(v), size = v)
+  # })
   
   output$termCoverage <- renderText({
     

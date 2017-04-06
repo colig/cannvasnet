@@ -1,6 +1,6 @@
 require(shiny)
 require(shinythemes)
-require(rWordCloud)
+# require(rWordCloud)
 require(visNetwork)
 
 ## A hidden input for IP address
@@ -29,7 +29,8 @@ shinyUI(
         br(),
         
         selectInput("section", "Course Section", choices = c("Section 001" = token_sec001, "Section 002" = token_sec002)),
-        dateRangeInput('dateRange', label = "Date Range", start = Sys.Date() - 14, end = Sys.Date(), min = "2015-09-01", max = "2015-12-24"),
+        # dateRangeInput('dateRange', label = "Date Range", start = Sys.Date() - 14, end = Sys.Date(), min = "2015-09-01", max = "2015-12-24"),
+        dateRangeInput('dateRange', label = "Date Range", start = "2015-09-01", end = "2015-11-01", min = "2015-09-01", max = "2015-12-24"),
         textInput("userId", "Your Canvas Id"),
         checkboxInput("hideTeacher", "Hide Teacher", value=TRUE),
         actionButton("update", "Update", class = "btn-primary btn-sm")
@@ -51,8 +52,9 @@ shinyUI(
                              column(5, sliderInput("freq", "Minimum Frequency:", min = 1,  max = 50, value = 15)),
                              column(7, sliderInput("max", "Maximum Number of Words:", min = 1,  max = 100,  value = 20)),
                              p(htmlOutput("termCoverage")),
-                             p(htmlOutput("wordCount")),
-                             d3CloudOutput("d3Plot", width = "100%", height = 600)
+                             p(htmlOutput("wordCount"))
+                             # ,
+                             # d3CloudOutput("d3Plot", width = "100%", height = 600)
                     ),
                     tabPanel("About", htmlOutput("about"))
         )
