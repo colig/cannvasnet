@@ -4,6 +4,7 @@
 
 shiny_app_token.rds
 rsconnect/
+.httr-oauth
 
 # General
 .DS_Store
