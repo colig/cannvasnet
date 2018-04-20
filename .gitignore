@@ -2,6 +2,9 @@
 .Rhistory
 .RData
 
+shiny_app_token.rds
+rsconnect/
+
 # General
 .DS_Store
 .AppleDouble
